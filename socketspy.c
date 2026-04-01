@@ -13,10 +13,12 @@
 #include <linux/netlink.h>
 #include <linux/inet_diag.h>
 #include <linux/sock_diag.h>
+#include <fcntl.h>
 
 #define MAX_EVENTS 4
 #define HASH_SIZE 65536
 #define TCPF_ALL 0xFFF
+#define INTERVAL_MICROSEC 1000
 
 /* =========================
   Connection key (for deduplication)
@@ -146,12 +148,20 @@ void send_diag_req(int fd) {
              main
    ========================= */
 int main() {
+    /* --- Create netlink socket --- */
     int nl = socket(AF_NETLINK, SOCK_RAW, NETLINK_INET_DIAG);
     if (nl < 0) {
         perror("socket");
         return 1;
     }
 
+    /* --- non-blocking --- */
+    if (fcntl(nl, F_SETFL, O_NONBLOCK) < 0) {
+        perror("fcntl");
+        return 1;
+    }
+
+    /* --- bind --- */
     struct sockaddr_nl addr = {0};
     addr.nl_family = AF_NETLINK;
 
@@ -160,63 +170,112 @@ int main() {
         return 1;
     }
 
+    /* --- Create epoll --- */
     int ep = epoll_create1(0);
+    if (ep < 0) {
+        perror("epoll_create1");
+        return 1;
+    }
+
+    /* --- Register epoll --- */
     struct epoll_event ev = {0};
     ev.events = EPOLLIN;
     ev.data.fd = nl;
-    epoll_ctl(ep, EPOLL_CTL_ADD, nl, &ev);
 
-    send_diag_req(nl);
+    if (epoll_ctl(ep, EPOLL_CTL_ADD, nl, &ev) < 0) {
+        perror("epoll_ctl");
+        return 1;
+    }
 
+    /* =========================
+       Main loop
+       ========================= */
     while (1) {
-        struct epoll_event events[MAX_EVENTS];
-        int n = epoll_wait(ep, events, MAX_EVENTS, -1);
 
-        for (int i=0;i<n;i++) {
-            if (events[i].data.fd == nl) {
+        /* --- Call to kernel --- */
+        send_diag_req(nl);
 
-                char buf[8192];
-                int len = recv(nl, buf, sizeof(buf), 0);
+        int done = 0;
 
-                for (struct nlmsghdr *h = (struct nlmsghdr*)buf;
-                     NLMSG_OK(h, len);
-                     h = NLMSG_NEXT(h, len)) {
+        /* --- Receive dump until done --- */
+        while (!done) {
 
-                    if (h->nlmsg_type == NLMSG_DONE) break;
+            struct epoll_event events[MAX_EVENTS];
 
-                    struct inet_diag_msg *m = NLMSG_DATA(h);
+            int n = epoll_wait(ep, events, MAX_EVENTS, 1000);
+            if (n < 0) {
+                perror("epoll_wait");
+                break;
+            }
 
-                    conn_key_t k;
-                    k.lip = m->id.idiag_src[0];
-                    k.rip = m->id.idiag_dst[0];
-                    k.lport = ntohs(m->id.idiag_sport);
-                    k.rport = ntohs(m->id.idiag_dport);
+            if (n == 0) continue; // Timeout
 
-                    if (is_duplicate(&k)) continue;
+            for (int i = 0; i < n; i++) {
 
-                    char lip[64], rip[64];
-                    inet_ntop(AF_INET, &k.lip, lip, sizeof(lip));
-                    inet_ntop(AF_INET, &k.rip, rip, sizeof(rip));
+                if (events[i].data.fd != nl) continue;
 
-                    pid_t pid;
-                    char cmd[256];
+                /* --- recv loop --- */
+                while (1) {
 
-                    int found = find_pid_by_inode(m->idiag_inode, &pid, cmd, sizeof(cmd));
+                    char buf[8192];
+                    int len = recv(nl, buf, sizeof(buf), 0);
 
-                    char t[64];
-                    now(t, sizeof(t));
+                    if (len < 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK)
+                            break; // Nothing to read
+                        perror("recv");
+                        done = 1;
+                        break;
+                    }
 
-                    printf("[%s] %s:%d <---> %s:%d",
-                           t, lip, k.lport, rip, k.rport);
+                    struct nlmsghdr *h;
 
-                    if (found)
-                        printf(" PID:%d CMD:%s", pid, cmd);
+                    for (h = (struct nlmsghdr*)buf;
+                         NLMSG_OK(h, len);
+                         h = NLMSG_NEXT(h, len)) {
 
-                    printf("\n");
+                        if (h->nlmsg_type == NLMSG_DONE) {
+                            done = 1; // End dump
+                            break;
+                        }
+
+                        struct inet_diag_msg *m = NLMSG_DATA(h);
+
+                        conn_key_t k;
+                        k.lip = m->id.idiag_src[0];
+                        k.rip = m->id.idiag_dst[0];
+                        k.lport = ntohs(m->id.idiag_sport);
+                        k.rport = ntohs(m->id.idiag_dport);
+
+                        if (is_duplicate(&k)) continue;
+
+                        char lip[64], rip[64];
+                        inet_ntop(AF_INET, &k.lip, lip, sizeof(lip));
+                        inet_ntop(AF_INET, &k.rip, rip, sizeof(rip));
+
+                        pid_t pid;
+                        char cmd[256] = {0};
+
+                        int found = find_pid_by_inode(
+                            m->idiag_inode, &pid, cmd, sizeof(cmd));
+
+                        char t[64];
+                        now(t, sizeof(t));
+
+                        printf("[%s] %s:%d <---> %s:%d",
+                               t, lip, k.lport, rip, k.rport);
+
+                        if (found)
+                            printf(" PID:%d CMD:%s", pid, cmd);
+
+                        printf("\n");
+                    }
                 }
             }
         }
-        break; // Only one dump
+
+        /* --- Wait for next polling --- */
+        usleep(INTERVAL_MICROSEC);
     }
 
     close(nl);
