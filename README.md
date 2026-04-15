@@ -1,7 +1,7 @@
 # SocketSpy
 SocketSpy was created to meet the specific need of real-time monitoring of network traffic on Linux systems where packet capture tools like tcpdump are unavailable and root privileges cannot be used.  
 This tool operates as a single binary and produces output nearly equivalent to a command that loops the ss command every 1ms.  
-This tool is essentially a network version of pspy. Currently, it only supports IPv4 TCP.  
+This tool is essentially a network version of [pspy](https://github.com/DominicBreuker/pspy). Currently, it only supports IPv4 TCP.  
 ## Build 
 `gcc -Wall -O2 -static ./socketspy.c -o socketspy`  
 ## Usage
