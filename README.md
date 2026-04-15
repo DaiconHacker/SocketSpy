@@ -1,14 +1,14 @@
 # SocketSpy
-SocketSpy was created to meet the specific need of real-time monitoring of network traffic on Linux systems where packet capture tools like tcpdump are unavailable and root privileges cannot be used.
-This tool operates as a single binary and produces output nearly equivalent to a command that loops the ss command every 1ms.
-This tool is essentially a network version of pspy. Currently, it only supports IPv4 TCP.
-## Build
-`gcc -Wall -O2 -static ./socketspy.c -o socketspy`
+SocketSpy was created to meet the specific need of real-time monitoring of network traffic on Linux systems where packet capture tools like tcpdump are unavailable and root privileges cannot be used.  
+This tool operates as a single binary and produces output nearly equivalent to a command that loops the ss command every 1ms.  
+This tool is essentially a network version of pspy. Currently, it only supports IPv4 TCP.  
+## Build 
+`gcc -Wall -O2 -static ./socketspy.c -o socketspy`  
 ## Usage
-Without timeout
-`./socketspy 0`
-If you want to run it with a timeout (if you want it to automatically terminate after 10 seconds)
-`./socketspy 10`
+Without timeout  
+`./socketspy 0`  
+If you want to run it with a timeout (if you want it to automatically terminate after 10 seconds)  
+`./socketspy 10`  
 ## Output
 ```
 ┌──(kali㉿kali)-[~/]
