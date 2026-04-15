@@ -17,7 +17,7 @@ usage  : ./socketspy [timeout seconds]
 example: ./socketspy 10 <--- execute 10 seconds
 example: ./socketspy 0  <--- no timeout
                                                                                                                                                                                                                                                              
-┌──(kali㉿kali)-[~/ACD_Tools]
+┌──(kali㉿kali)-[~/]
 └─$ ./socketspy 10
 [2026-04-15 09:16:51] 0.0.0.0:22 <---> 0.0.0.0:0
 [2026-04-15 09:16:54] 192.168.87.128:43286 <---> 34.160.144.191:443 PID:135463 CMD:/usr/lib/firefox-esr/firefox-esr 
