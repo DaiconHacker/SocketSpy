@@ -149,7 +149,12 @@ void send_diag_req(int fd) {
 /* =========================
              main
    ========================= */
-int main() {
+int main(int argc, char *argv[]) {
+    if (argc != 2){
+        printf("usage  : %s [timeout seconds]\nexample: %s 10 <--- execute 10 seconds\nexample: %s 0  <--- no timeout\n", argv[0], argv[0], argv[0]);
+        return 1;
+    }
+    
     /* --- Create netlink socket --- */
     int nl = socket(AF_NETLINK, SOCK_RAW, NETLINK_INET_DIAG);
     if (nl < 0) {
@@ -192,7 +197,10 @@ int main() {
     /* =========================
        Main loop
        ========================= */
-    while (1) {
+    int loop_count = 0;
+    int loop_second;
+    loop_second = atoi(argv[1]);
+    while (loop_second * 1000 >= loop_count) {
 
         /* --- Call to kernel --- */
         send_diag_req(nl);
@@ -278,6 +286,9 @@ int main() {
 
         /* --- Wait for next polling --- */
         usleep(INTERVAL_MICROSEC);
+        if (loop_second != 0){
+            loop_count++;
+        }
     }
 
     close(nl);
