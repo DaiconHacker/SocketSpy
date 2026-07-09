@@ -3,20 +3,19 @@ SocketSpy was created to meet the specific need of real-time monitoring of netwo
 This tool operates as a single binary and produces output nearly equivalent to a command that loops the ss command every 1ms.  
 This tool is essentially a network version of [pspy](https://github.com/DominicBreuker/pspy). Currently, it only supports IPv4 TCP.  
 ## Build 
-`gcc -Wall -O2 -static ./socketspy.c -o socketspy`  
+`gcc -Wall -O3 -static ./socketspy.c -o socketspy`  
 ## Usage
 Without timeout  
 `./socketspy 0`  
 If you want to run it with a timeout (if you want it to automatically terminate after 10 seconds)  
 `./socketspy 10`  
+If you want to output the results to a file  
+`./socketspy 10 log.txt`
 ## Output
 ```
 ┌──(kali㉿kali)-[~/]
 └─$ ./socketspy    
-usage  : ./socketspy [timeout seconds]
-example: ./socketspy 10 <--- execute 10 seconds
-example: ./socketspy 0  <--- no timeout
-                                                                                                                                                                                                                                                             
+Usage: ./socketspy <timeout_sec> <output_file>                                                                                                                                                                                                                                                 
 ┌──(kali㉿kali)-[~/]
 └─$ ./socketspy 10
 [2026-04-15 09:16:51] 0.0.0.0:22 <---> 0.0.0.0:0
