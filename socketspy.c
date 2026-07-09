@@ -1,4 +1,4 @@
-// gcc -Wall -O2 -static ./socketspy.c -o socketspy
+// gcc -Wall -O3 -static ./socketspy.c -o socketspy
 
 #define _GNU_SOURCE
 #include <stdio.h>
