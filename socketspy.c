@@ -16,11 +16,31 @@
 #include <linux/inet_diag.h>
 #include <linux/sock_diag.h>
 #include <fcntl.h>
+#include <stdarg.h>
 
 #define MAX_EVENTS 4
 #define HASH_SIZE 65536
 #define TCPF_ALL 0xFFF
 #define INTERVAL_MICROSEC 1000
+
+int logfd = -1;
+
+void dual_output(const char *fmt, ...)
+{
+    char buf[2048];
+
+    va_list ap;
+    va_start(ap, fmt);
+    int len = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+
+    if (len > 0) {
+        write(STDOUT_FILENO, buf, len);
+        if (logfd >= 0) {
+            write(logfd, buf, len);
+        }
+    }
+}
 
 /* =========================
   Connection key (for deduplication)
@@ -150,9 +170,17 @@ void send_diag_req(int fd) {
              main
    ========================= */
 int main(int argc, char *argv[]) {
-    if (argc != 2){
-        printf("usage  : %s [timeout seconds]\nexample: %s 10 <--- execute 10 seconds\nexample: %s 0  <--- no timeout\n", argv[0], argv[0], argv[0]);
+    if (!(argc == 2 || argc == 3)) {
+        fprintf(stderr, "Usage: %s <timeout_sec> <output_file>\n", argv[0]);
         return 1;
+    }
+
+    if (argc == 3){
+        logfd = open(argv[2], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (logfd < 0) {
+            perror("open");
+            return 1;
+        }
     }
     
     /* --- Create netlink socket --- */
@@ -272,13 +300,13 @@ int main(int argc, char *argv[]) {
                         char t[64];
                         now(t, sizeof(t));
 
-                        printf("[%s] %s:%d <---> %s:%d",
+                        dual_output("[%s] %s:%d <---> %s:%d",
                                t, lip, k.lport, rip, k.rport);
 
                         if (found)
-                            printf(" PID:%d CMD:%s", pid, cmd);
+                            dual_output(" PID:%d CMD:%s", pid, cmd);
 
-                        printf("\n");
+                        dual_output("\n");
                     }
                 }
             }
@@ -293,5 +321,6 @@ int main(int argc, char *argv[]) {
 
     close(nl);
     close(ep);
+    close(logfd);
     return 0;
 }
