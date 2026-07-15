@@ -35,9 +35,10 @@ void dual_output(const char *fmt, ...)
     va_end(ap);
 
     if (len > 0) {
-        write(STDOUT_FILENO, buf, len);
         if (logfd >= 0) {
             write(logfd, buf, len);
+        } else{
+            write(STDOUT_FILENO, buf, len);
         }
     }
 }
@@ -46,6 +47,7 @@ void dual_output(const char *fmt, ...)
   Connection key (for deduplication)
    ========================= */
 typedef struct {
+    uint8_t proto;
     uint32_t lip, rip;
     uint16_t lport, rport;
 } conn_key_t;
@@ -61,7 +63,7 @@ typedef struct node {
 node_t *htable[HASH_SIZE];
 
 unsigned int hash_conn(conn_key_t *k) {
-    return (k->lip ^ k->rip ^ k->lport ^ k->rport) % HASH_SIZE;
+    return (k->proto ^ k->lip ^ k->rip ^ k->lport ^ k->rport) % HASH_SIZE;
 }
 
 int is_duplicate(conn_key_t *k) {
@@ -147,7 +149,7 @@ void now(char *buf, size_t sz) {
 /* =========================
          Send Netlink
    ========================= */
-void send_diag_req(int fd) {
+void send_diag_req(int fd, int proto) {
     struct {
         struct nlmsghdr nlh;
         struct inet_diag_req_v2 req;
@@ -160,10 +162,90 @@ void send_diag_req(int fd) {
     msg.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
 
     msg.req.sdiag_family = AF_INET;
-    msg.req.sdiag_protocol = IPPROTO_TCP;
+    msg.req.sdiag_protocol = proto;
     msg.req.idiag_states = TCPF_ALL;
 
     send(fd, &msg, msg.nlh.nlmsg_len, 0);
+}
+
+/* =========================
+             main
+   ========================= */
+void recv_diag(int nl, int ep, int proto) {
+    /* --- Receive dump until done --- */
+    struct epoll_event events[MAX_EVENTS];
+    int n = epoll_wait(ep, events, MAX_EVENTS, 1000);
+    if (n < 0) {
+        perror("epoll_wait");
+        return;
+    }
+    
+    if (n == 0) return; // Timeout
+
+    const char *protocol_str;
+    switch (proto){
+        case IPPROTO_TCP:
+            protocol_str = "TCP";
+            break;
+        case IPPROTO_UDP:
+            protocol_str = "UDP";
+            break;
+        default:
+            protocol_str = "UNKNOWN";
+    }
+
+    for (int i = 0; i < n; i++) {
+        if (events[i].data.fd != nl) continue;
+        /* --- recv loop --- */
+        while (1) {
+            char buf[8192];
+
+            int len = recv(nl, buf, sizeof(buf), 0);
+            if (len < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    return; // Nothing to read
+                perror("recv");
+                return;
+            }
+
+            struct nlmsghdr *h;
+            for (h = (struct nlmsghdr*)buf;
+                NLMSG_OK(h, len);
+
+                h = NLMSG_NEXT(h, len)) {
+                if (h->nlmsg_type == NLMSG_DONE) {
+                    return; // End dump
+                }
+
+                struct inet_diag_msg *m = NLMSG_DATA(h);
+                conn_key_t k;
+
+                k.proto = proto;
+                k.lip = m->id.idiag_src[0];
+                k.rip = m->id.idiag_dst[0];
+                k.lport = ntohs(m->id.idiag_sport);
+                k.rport = ntohs(m->id.idiag_dport);
+
+                if (is_duplicate(&k)) continue;
+
+                char lip[64], rip[64];
+                inet_ntop(AF_INET, &k.lip, lip, sizeof(lip));
+                inet_ntop(AF_INET, &k.rip, rip, sizeof(rip));
+                pid_t pid;
+                char cmd[256] = {0};
+                int found = find_pid_by_inode(m->idiag_inode, &pid, cmd, sizeof(cmd));
+                char t[64];
+                now(t, sizeof(t));
+
+                
+                dual_output("[%s] %s:%d/%s <---> %s:%d/%s", t, lip, k.lport, protocol_str, rip, k.rport, protocol_str);
+                if (found) {
+                    dual_output(" PID:%d CMD:%s", pid, cmd);
+                }  
+                dual_output("\n");
+            }
+        }
+    }
 }
 
 /* =========================
@@ -230,87 +312,15 @@ int main(int argc, char *argv[]) {
     loop_second = atoi(argv[1]);
     while (loop_second * 1000 >= loop_count) {
 
-        /* --- Call to kernel --- */
-        send_diag_req(nl);
+        /* --- Call to kernel (TCP) --- */
+        send_diag_req(nl, IPPROTO_TCP);
+        /* --- Recieve from kernel --- */
+        recv_diag(nl, ep, IPPROTO_TCP);
 
-        int done = 0;
-
-        /* --- Receive dump until done --- */
-        while (!done) {
-
-            struct epoll_event events[MAX_EVENTS];
-
-            int n = epoll_wait(ep, events, MAX_EVENTS, 1000);
-            if (n < 0) {
-                perror("epoll_wait");
-                break;
-            }
-
-            if (n == 0) continue; // Timeout
-
-            for (int i = 0; i < n; i++) {
-
-                if (events[i].data.fd != nl) continue;
-
-                /* --- recv loop --- */
-                while (1) {
-
-                    char buf[8192];
-                    int len = recv(nl, buf, sizeof(buf), 0);
-
-                    if (len < 0) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK)
-                            break; // Nothing to read
-                        perror("recv");
-                        done = 1;
-                        break;
-                    }
-
-                    struct nlmsghdr *h;
-
-                    for (h = (struct nlmsghdr*)buf;
-                         NLMSG_OK(h, len);
-                         h = NLMSG_NEXT(h, len)) {
-
-                        if (h->nlmsg_type == NLMSG_DONE) {
-                            done = 1; // End dump
-                            break;
-                        }
-
-                        struct inet_diag_msg *m = NLMSG_DATA(h);
-
-                        conn_key_t k;
-                        k.lip = m->id.idiag_src[0];
-                        k.rip = m->id.idiag_dst[0];
-                        k.lport = ntohs(m->id.idiag_sport);
-                        k.rport = ntohs(m->id.idiag_dport);
-
-                        if (is_duplicate(&k)) continue;
-
-                        char lip[64], rip[64];
-                        inet_ntop(AF_INET, &k.lip, lip, sizeof(lip));
-                        inet_ntop(AF_INET, &k.rip, rip, sizeof(rip));
-
-                        pid_t pid;
-                        char cmd[256] = {0};
-
-                        int found = find_pid_by_inode(
-                            m->idiag_inode, &pid, cmd, sizeof(cmd));
-
-                        char t[64];
-                        now(t, sizeof(t));
-
-                        dual_output("[%s] %s:%d <---> %s:%d",
-                               t, lip, k.lport, rip, k.rport);
-
-                        if (found)
-                            dual_output(" PID:%d CMD:%s", pid, cmd);
-
-                        dual_output("\n");
-                    }
-                }
-            }
-        }
+        /* --- Call to kernel (UDP) --- */
+        send_diag_req(nl, IPPROTO_UDP);
+        /* --- Recieve from kernel --- */
+        recv_diag(nl, ep, IPPROTO_UDP);
 
         /* --- Wait for next polling --- */
         usleep(INTERVAL_MICROSEC);
