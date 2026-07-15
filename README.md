@@ -9,7 +9,7 @@ Without timeout
 `./socketspy 0`  
 If you want to run it with a timeout (if you want it to automatically terminate after 10 seconds)  
 `./socketspy 10`  
-If you want to output the results to a file  
+If you want to output the results to a file  (If a file is specified, nothing is displayed on standard output)  
 `./socketspy 10 log.txt`
 ## Output
 ```
