@@ -24,6 +24,22 @@
 #define INTERVAL_MICROSEC 1000
 
 int logfd = -1;
+static long long run_deadline_ns = -1;
+
+static long long monotonic_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000000LL + (long long)ts.tv_nsec;
+}
+
+static long long remaining_ns(void) {
+    if (run_deadline_ns < 0) {
+        return -1;
+    }
+
+    long long rem = run_deadline_ns - monotonic_ns();
+    return (rem > 0) ? rem : 0;
+}
 
 void dual_output(const char *fmt, ...)
 {
@@ -174,7 +190,23 @@ void send_diag_req(int fd, int proto) {
 void recv_diag(int nl, int ep, int proto) {
     /* --- Receive dump until done --- */
     struct epoll_event events[MAX_EVENTS];
-    int n = epoll_wait(ep, events, MAX_EVENTS, 1000);
+
+    int timeout_ms;
+    if (run_deadline_ns < 0) {
+        timeout_ms = 1000;
+    } else {
+        long long rem = remaining_ns();
+        if (rem <= 0) {
+            return;
+        }
+
+        timeout_ms = (int)(rem / 1000LL);
+        if (timeout_ms > 1000) {
+            timeout_ms = 1000;
+        }
+    }
+
+    int n = epoll_wait(ep, events, MAX_EVENTS, timeout_ms);
     if (n < 0) {
         perror("epoll_wait");
         return;
@@ -252,6 +284,9 @@ void recv_diag(int nl, int ep, int proto) {
              main
    ========================= */
 int main(int argc, char *argv[]) {
+
+    dual_output("SocketSpy Version 1.1\n");
+
     if (!(argc == 2 || argc == 3)) {
         fprintf(stderr, "Usage: %s <timeout_sec> <output_file>\n", argv[0]);
         return 1;
@@ -307,10 +342,12 @@ int main(int argc, char *argv[]) {
     /* =========================
        Main loop
        ========================= */
-    int loop_count = 0;
-    int loop_second;
-    loop_second = atoi(argv[1]);
-    while (loop_second * 1000 >= loop_count) {
+    int timeout_sec = atoi(argv[1]);
+    if (timeout_sec > 0) {
+        run_deadline_ns = monotonic_ns() + (long long)timeout_sec * 1000000000LL;
+    }
+
+    while (run_deadline_ns < 0 || remaining_ns() > 0) {
 
         /* --- Call to kernel (TCP) --- */
         send_diag_req(nl, IPPROTO_TCP);
@@ -322,10 +359,19 @@ int main(int argc, char *argv[]) {
         /* --- Recieve from kernel --- */
         recv_diag(nl, ep, IPPROTO_UDP);
 
-        /* --- Wait for next polling --- */
-        usleep(INTERVAL_MICROSEC);
-        if (loop_second != 0){
-            loop_count++;
+        if (run_deadline_ns < 0) {
+            usleep(INTERVAL_MICROSEC);
+        } else {
+            long long rem = remaining_ns();
+            if (rem <= 0) {
+                break;
+            }
+
+            if (rem < (long long)INTERVAL_MICROSEC * 1000LL) {
+                usleep((unsigned)rem);
+            } else {
+                usleep(INTERVAL_MICROSEC);
+            }
         }
     }
 
